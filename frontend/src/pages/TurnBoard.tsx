@@ -38,7 +38,9 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import JudgmentChain from '../components/common/JudgmentChain';
 import { useTurnTimeline } from '../hooks/useTurnTimeline';
+import { useProcessJudgment } from '../hooks/useProcessJudgment';
 import { useGardenStore } from '../stores/gardenStore';
 import { useBatchStore } from '../stores/batchStore';
 import {
@@ -52,7 +54,15 @@ import {
 } from '../stores/turnStore';
 import type { Turn, TurnDraft } from '../types/turn';
 import { TURN_LIMITS } from '../types/turn';
-import { batchLabel, judgeHumidity, judgeRoomTemp, judgeShakeMin, judgeWaterLoss, minutesToReadable } from '../utils/tea';
+import { ConcurrencyConflictError } from '../utils/db';
+import { batchLabel, minutesToReadable } from '../utils/tea';
+import {
+  FALLBACK_STANDARD_PARAMS,
+  judgeHumidityByStandard,
+  judgeRoomTempByStandard,
+  judgeShakeMinByStandard,
+  judgeWaterLossByStandard,
+} from '../utils/standard';
 
 /** 表单字段（batchId 由当前批次决定） */
 type TurnFormValues = Omit<TurnDraft, 'batchId'>;
@@ -103,6 +113,10 @@ export default function TurnBoard() {
 
   const activeBatch = batches.find((batch) => batch.id === activeBatchId) ?? null;
   const timeline = useTurnTimeline(activeBatchId);
+  const { byBatch: judgmentByBatch, activeByGarden } = useProcessJudgment();
+  const activeStandard = activeBatch ? activeByGarden[activeBatch.gardenId] ?? null : null;
+  const standardParams = activeStandard ?? FALLBACK_STANDARD_PARAMS;
+  const activeJudgment = activeBatch ? judgmentByBatch[activeBatch.id] : undefined;
 
   const orderedTurns = useMemo(() => [...turns].sort((a, b) => a.roundNo - b.roundNo), [turns]);
   const filteredTurns = useMemo(() => filterTurns(orderedTurns, filters), [orderedTurns, filters]);
@@ -171,7 +185,13 @@ export default function TurnBoard() {
       setModalOpen(false);
       setEditingTurn(null);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '做青轮次保存失败');
+      if (error instanceof ConcurrencyConflictError) {
+        message.error(error.message);
+        // 晚到一次：放弃本地覆盖，拉取对方刚提交的最新做青记录与新版本号
+        if (activeBatchId) await setActiveBatch(activeBatchId);
+      } else {
+        message.error(error instanceof Error ? error.message : '做青轮次保存失败');
+      }
     }
   };
 
@@ -213,8 +233,17 @@ export default function TurnBoard() {
     dragIdRef.current = null;
     setDragId(null);
     setOverId(null);
-    await reorderTurns(next);
-    message.success('轮次顺序已保存（roundNo 已写回本地数据库）');
+    try {
+      await reorderTurns(next);
+      message.success('轮次顺序已保存（roundNo 已写回本地数据库）');
+    } catch (error) {
+      if (error instanceof ConcurrencyConflictError) {
+        message.error(error.message);
+        if (activeBatchId) await setActiveBatch(activeBatchId);
+      } else {
+        message.error(error instanceof Error ? error.message : '轮次排序保存失败');
+      }
+    }
   };
 
   /* ------------------------------ 列定义 ------------------------------ */
@@ -226,7 +255,7 @@ export default function TurnBoard() {
       dataIndex: 'shakeMin',
       width: 150,
       render: (value: number) => {
-        const verdict = judgeShakeMin(value);
+        const verdict = judgeShakeMinByStandard(value, standardParams);
         return (
           <Space size={6}>
             <span>{value} 分钟</span>
@@ -241,7 +270,7 @@ export default function TurnBoard() {
       dataIndex: 'roomTempC',
       width: 130,
       render: (value: number) => {
-        const verdict = judgeRoomTemp(value);
+        const verdict = judgeRoomTempByStandard(value, standardParams);
         return (
           <Space size={6}>
             <span>{value} ℃</span>
@@ -255,7 +284,7 @@ export default function TurnBoard() {
       dataIndex: 'humidityPct',
       width: 130,
       render: (value: number) => {
-        const verdict = judgeHumidity(value);
+        const verdict = judgeHumidityByStandard(value, standardParams);
         return (
           <Space size={6}>
             <span>{value} %</span>
@@ -270,7 +299,7 @@ export default function TurnBoard() {
       width: 160,
       render: (value: number, row) => {
         const item = itemByTurnId.get(row.id);
-        const verdict = judgeWaterLoss(value);
+        const verdict = judgeWaterLossByStandard(value, standardParams);
         return (
           <Space size={6}>
             <span>{value} %</span>
@@ -410,8 +439,8 @@ export default function TurnBoard() {
               label="末轮失水率"
               value={timeline.finalWaterLossPct}
               suffix="%"
-              tone={timeline.verdicts.waterLoss?.level === 'ok' ? 'success' : 'warning'}
-              hint={timeline.verdicts.waterLoss?.hint}
+              tone={activeJudgment?.waterLoss.level === 'ok' ? 'success' : 'warning'}
+              hint={activeJudgment?.waterLoss.hint}
             />
             <StatBadge
               label="峰值失水速率"
@@ -421,6 +450,10 @@ export default function TurnBoard() {
               hint={timeline.trend === 'rising' ? '走势：持续上升' : timeline.trend === 'falling' ? '走势：回落' : '走势：平稳'}
             />
           </div>
+
+          <Card className="panel-card" style={{ marginBottom: 14 }} title="判定链 · 基准 → 做青 → 焙火 → 审评">
+            <JudgmentChain judgment={activeJudgment} />
+          </Card>
 
           <Row gutter={[14, 14]}>
             <Col xs={24} xl={14}>
@@ -553,9 +586,9 @@ export default function TurnBoard() {
                       </div>
                     ))}
                     <Space size={8} wrap>
-                      {timeline.verdicts.roomTemp ? <Tag>{timeline.verdicts.roomTemp.label}</Tag> : null}
-                      {timeline.verdicts.humidity ? <Tag>{timeline.verdicts.humidity.label}</Tag> : null}
-                      {timeline.verdicts.waterLoss ? <Tag>{timeline.verdicts.waterLoss.label}</Tag> : null}
+                      {activeJudgment?.roomTemp ? <Tag>{activeJudgment.roomTemp.label}</Tag> : null}
+                      {activeJudgment?.humidity ? <Tag>{activeJudgment.humidity.label}</Tag> : null}
+                      {activeJudgment ? <Tag>{activeJudgment.waterLoss.label}</Tag> : null}
                       {activeBatch ? <GradeTag kind="state" value={activeBatch.state} /> : null}
                     </Space>
                   </Space>
@@ -688,7 +721,7 @@ export default function TurnBoard() {
                     message: `失水率需在 ${TURN_LIMITS.waterLossPct.min}-${TURN_LIMITS.waterLossPct.max} %`,
                   },
                 ]}
-                extra="做青全程目标 12%-20%，超过 20% 建议尽快杀青"
+                extra={`做青全程目标按山场基准 ${standardParams.waterLossMinPct}%-${standardParams.waterLossMaxPct}%，上限外建议尽快杀青`}
               >
                 <InputNumber min={TURN_LIMITS.waterLossPct.min} max={TURN_LIMITS.waterLossPct.max} step={0.5} style={{ width: '100%' }} />
               </Form.Item>

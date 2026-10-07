@@ -24,6 +24,7 @@ import {
   type Review,
   type ReviewScoreKey,
 } from '../types/review';
+import type { ProcessJudgment } from '../types/standard';
 
 /* ------------------------------ 嫩度映射 ------------------------------ */
 
@@ -358,8 +359,17 @@ export function matchScoreBand(score: number, bandKeys: string[]): boolean {
 
 /* ----------------------------- 拼配候选 ----------------------------- */
 
-/** 按总分由高到低生成拼配候选清单 */
-export function buildBlendCandidates(reviews: Review[], batches: Batch[], gardens: Garden[]): BlendCandidate[] {
+/**
+ * 按总分由高到低生成拼配候选清单。
+ * 传入 judgments 后：总分相同再按工艺贴合度排序——基准一改动，未定稿候选的贴合度复算，次序跟着重排；
+ * 已定稿候选展示冻结的当时贴合度（保住当时判定），不被新基准改写。
+ */
+export function buildBlendCandidates(
+  reviews: Review[],
+  batches: Batch[],
+  gardens: Garden[],
+  judgments?: Record<string, ProcessJudgment>,
+): BlendCandidate[] {
   const batchMap = new Map(batches.map((batch) => [batch.id, batch]));
   const gardenMap = new Map(gardens.map((garden) => [garden.id, garden]));
   return reviews
@@ -367,6 +377,7 @@ export function buildBlendCandidates(reviews: Review[], batches: Batch[], garden
     .map((review) => {
       const batch = batchMap.get(review.batchId) as Batch;
       const garden = gardenMap.get(batch.gardenId);
+      const judgment = judgments?.[review.batchId];
       return {
         reviewId: review.id,
         batchId: review.batchId,
@@ -375,11 +386,13 @@ export function buildBlendCandidates(reviews: Review[], batches: Batch[], garden
         gardenName: garden ? garden.name : '未知山场',
         cultivar: garden ? garden.cultivar : '未标注',
         totalScore: review.totalScore,
+        conformanceScore: judgment?.conformanceScore ?? 0,
+        judgmentFrozen: judgment?.frozen ?? false,
         state: batch.state,
         pickedAt: batch.pickedAt,
       };
     })
-    .sort((a, b) => b.totalScore - a.totalScore);
+    .sort((a, b) => b.totalScore - a.totalScore || b.conformanceScore - a.conformanceScore);
 }
 
 /** 是否达到拼配候选门槛 */

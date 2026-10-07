@@ -19,6 +19,7 @@ import type { Garden } from '../types/garden';
 import {
   ID_PREFIX,
   createId,
+  finalizeBatch,
   listBatches,
   listFixes,
   listReviews,
@@ -245,6 +246,11 @@ export const useBatchStore = create<BatchStoreState>((set, get) => ({
       tenderness: draft.tenderness,
       weather: draft.weather.trim(),
       state: draft.state,
+      standardVersionNo: null,
+      finalizedAt: null,
+      frozenJudgment: null,
+      turnsRev: 1,
+      roastsRev: 1,
       createdAt: stamp,
       updatedAt: stamp,
     };
@@ -290,6 +296,12 @@ export const useBatchStore = create<BatchStoreState>((set, get) => ({
     const batch = get().batches.find((item) => item.id === batchId);
     if (!batch) return null;
     if (batchStateOrder(target) <= batchStateOrder(batch.state)) return batch.state;
+    if (target === '已审评') {
+      // 定稿：锁定当前基准版本并冻结当时判定（基准再改也不重算）
+      const finalized = await finalizeBatch(batchId);
+      await get().loadBatches();
+      return finalized.state;
+    }
     const next: Batch = { ...batch, state: target, updatedAt: nowIso() };
     await putBatch(next);
     await get().loadBatches();

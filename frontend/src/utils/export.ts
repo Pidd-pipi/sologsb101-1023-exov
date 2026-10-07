@@ -11,6 +11,7 @@ import type { Turn } from '../types/turn';
 import type { Fix } from '../types/fix';
 import type { Roast } from '../types/roast';
 import type { Review } from '../types/review';
+import type { ProcessJudgment, ProcessStandard } from '../types/standard';
 import { DB_NAME, DB_VERSION, type DatabaseSnapshot } from './db';
 import { batchLabel, isRatioValid, roundTo } from './tea';
 
@@ -40,17 +41,21 @@ export function stampSuffix(): string {
 
 /* --------------------------- 批次工艺记录导出 --------------------------- */
 
-/** 单个批次的完整工艺记录（父 → 子 → 孙三层贯通） */
+/** 单个批次的完整工艺记录（父 → 子 → 孙三层贯通，含基准版本与判定链结论） */
 export interface BatchProcessBundle {
   name: string;
   schemaVersion: number;
   exportedAt: string;
   garden: Garden | null;
+  /** 判定所依据的基准版本（定稿批次为锁定的历史版本，未定稿为当前生效版本） */
+  standard: ProcessStandard | null;
   batch: Batch;
   turns: Turn[];
   fix: Fix | null;
   roasts: Roast[];
   review: Review | null;
+  /** 判定链结论：已定稿为冻结判定，未定稿为按当前基准的实时判定 */
+  judgment: ProcessJudgment | null;
   summary: {
     turnCount: number;
     totalShakeMin: number;
@@ -58,6 +63,9 @@ export interface BatchProcessBundle {
     totalMin: number;
     finalWaterLossPct: number;
     fireLevel: string;
+    standardVersionNo: number | null;
+    frozen: boolean;
+    conformanceScore: number;
   };
 }
 
@@ -65,27 +73,31 @@ export interface BatchProcessBundle {
 export function buildBatchProcessBundle(params: {
   garden: Garden | null;
   batch: Batch;
+  standard: ProcessStandard | null;
   turns: Turn[];
   fix: Fix | null;
   roasts: Roast[];
   review: Review | null;
+  judgment: ProcessJudgment | null;
   fireLevel: string;
   totalShakeMin: number;
   totalRestMin: number;
   totalMin: number;
   finalWaterLossPct: number;
 }): BatchProcessBundle {
-  const { garden, batch, turns, fix, roasts, review, fireLevel } = params;
+  const { garden, batch, standard, turns, fix, roasts, review, judgment, fireLevel } = params;
   return {
     name: DB_NAME,
     schemaVersion: DB_VERSION,
     exportedAt: new Date().toISOString(),
     garden,
+    standard,
     batch,
     turns: [...turns].sort((a, b) => a.roundNo - b.roundNo),
     fix,
     roasts: [...roasts].sort((a, b) => a.passNo - b.passNo),
     review,
+    judgment,
     summary: {
       turnCount: turns.length,
       totalShakeMin: roundTo(params.totalShakeMin, 1),
@@ -93,6 +105,9 @@ export function buildBatchProcessBundle(params: {
       totalMin: roundTo(params.totalMin, 1),
       finalWaterLossPct: roundTo(params.finalWaterLossPct, 1),
       fireLevel,
+      standardVersionNo: judgment?.standardVersionNo ?? standard?.versionNo ?? null,
+      frozen: judgment?.frozen ?? false,
+      conformanceScore: judgment?.conformanceScore ?? 0,
     },
   };
 }
@@ -155,6 +170,10 @@ export function parseSnapshotJson(text: string): DatabaseSnapshot {
   assertRows(raw.fixes, 'fixes');
   assertRows(raw.roasts, 'roasts');
   assertRows(raw.reviews, 'reviews');
+  // 老存档（v2 及以前）没有 standards 表，缺省为空数组；导入时由 db 层按当前值补齐
+  if (raw.standards !== undefined && !Array.isArray(raw.standards)) {
+    throw new Error('存档「standards」格式不是数组');
+  }
   return {
     name: DB_NAME,
     schemaVersion: typeof raw.schemaVersion === 'number' ? raw.schemaVersion : DB_VERSION,
@@ -165,6 +184,7 @@ export function parseSnapshotJson(text: string): DatabaseSnapshot {
     fixes: raw.fixes as DatabaseSnapshot['fixes'],
     roasts: raw.roasts as DatabaseSnapshot['roasts'],
     reviews: raw.reviews as DatabaseSnapshot['reviews'],
+    standards: (raw.standards ?? []) as DatabaseSnapshot['standards'],
   };
 }
 

@@ -13,6 +13,7 @@ import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
 import { useIdbTable } from '../hooks/useIdbTable';
+import { useProcessJudgment } from '../hooks/useProcessJudgment';
 import { useGardenStore } from '../stores/gardenStore';
 import { filterBlendCandidates, useBatchStore } from '../stores/batchStore';
 import { db, exportSnapshot } from '../utils/db';
@@ -49,11 +50,12 @@ export default function BlendPlan() {
     prefix: 'review',
     sort: (a, b) => b.totalScore - a.totalScore,
   });
+  const { byBatch: judgmentByBatch } = useProcessJudgment();
   const [saving, setSaving] = useState(false);
 
   const candidates = useMemo(
-    () => buildBlendCandidates(reviewsTable.rows, batches, gardens),
-    [batches, gardens, reviewsTable.rows],
+    () => buildBlendCandidates(reviewsTable.rows, batches, gardens, judgmentByBatch),
+    [batches, gardens, reviewsTable.rows, judgmentByBatch],
   );
   const rows = useMemo(() => filterBlendCandidates(candidates, blendFilters), [blendFilters, candidates]);
 
@@ -177,6 +179,20 @@ export default function BlendPlan() {
       render: (value: number) => <GradeTag kind="score" value={value} />,
     },
     {
+      title: '工艺贴合度（按现行基准复算）',
+      key: 'conformance',
+      width: 220,
+      sorter: (a, b) => a.conformanceScore - b.conformanceScore,
+      render: (_: unknown, row) => (
+        <Space size={6} wrap>
+          <Tag color={row.conformanceScore >= 80 ? 'green' : row.conformanceScore >= 60 ? 'gold' : 'default'}>
+            {row.conformanceScore} 分
+          </Tag>
+          {row.judgmentFrozen ? <Tag color="gold">定稿冻结</Tag> : <Tag color="processing">随基准重排</Tag>}
+        </Space>
+      ),
+    },
+    {
       title: '候选资格',
       key: 'candidate',
       width: 110,
@@ -218,7 +234,7 @@ export default function BlendPlan() {
             拼配方案登记与结构版本导出
           </Typography.Title>
           <div className="page-hint">
-            按审评总分组合批次并分配占比；占比合计必须等于 100%，保存后写入审评记录的「拼配去向」字段。
+            候选先按审评总分、再按现行基准复算的工艺贴合度排序：基准一改动，未定稿候选跟着重排；已定稿批次保住当时判定（标「定稿冻结」）。占比合计必须等于 100%。
           </div>
         </div>
         <Space wrap>

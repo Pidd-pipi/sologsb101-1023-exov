@@ -38,7 +38,9 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import JudgmentChain from '../components/common/JudgmentChain';
 import { useTurnTimeline } from '../hooks/useTurnTimeline';
+import { useProcessJudgment } from '../hooks/useProcessJudgment';
 import { filterGardens, useGardenStore } from '../stores/gardenStore';
 import { useBatchStore } from '../stores/batchStore';
 import { ALTITUDE_BANDS, CULTIVAR_OPTIONS, SOIL_OPTIONS, type Garden, type GardenDraft } from '../types/garden';
@@ -49,7 +51,6 @@ import {
   altitudeBandLabel,
   averageScore,
   batchLabel,
-  judgeWaterLoss,
   minutesToReadable,
   roundTo,
   todayIso,
@@ -113,6 +114,7 @@ export default function GardenList() {
   );
   const timelineBatchId = detailBatches[0]?.id ?? null;
   const timeline = useTurnTimeline(timelineBatchId);
+  const { byBatch: judgmentByBatch } = useProcessJudgment();
   const detailGarden = gardens.find((garden) => garden.id === drawerGardenId) ?? null;
 
   const selectConfigs: FilterSelectConfig[] = [
@@ -494,6 +496,21 @@ export default function GardenList() {
               pagination={false}
               scroll={{ x: 720 }}
             />
+            <div className="panel-card" style={{ marginTop: 12 }}>
+              <Typography.Title level={5} style={{ marginTop: 0 }}>
+                判定链（基准 → 做青 → 焙火 → 审评）
+              </Typography.Title>
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                {detailBatches.map((batch) => (
+                  <div key={batch.id} style={{ borderBottom: '1px dashed rgba(47,81,54,0.15)', paddingBottom: 8 }}>
+                    <Typography.Text strong style={{ marginRight: 8 }}>
+                      {batchLabel(batch, detailGarden?.name)}
+                    </Typography.Text>
+                    <JudgmentChain judgment={judgmentByBatch[batch.id]} compact />
+                  </div>
+                ))}
+              </Space>
+            </div>
             <div className="panel-card" style={{ marginTop: 16 }}>
               <Typography.Title level={5} style={{ marginTop: 0 }}>
                 做青时间线 · 最新批次 {detailBatches[0] ? detailBatches[0].pickedAt : ''}
@@ -558,9 +575,12 @@ export default function GardenList() {
                         />
                       </div>
                     ))}
-                    {timeline.verdicts.waterLoss ? (
+                    {judgmentByBatch[timelineBatchId] ? (
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        末轮判定：{judgeWaterLoss(timeline.finalWaterLossPct).label} · {timeline.verdicts.waterLoss.hint}
+                        末轮判定：{judgmentByBatch[timelineBatchId].waterLoss.label} · {judgmentByBatch[timelineBatchId].waterLoss.hint}
+                        {judgmentByBatch[timelineBatchId].frozen
+                          ? `（定稿锁定 v${judgmentByBatch[timelineBatchId].standardVersionNo ?? '—'}）`
+                          : `（按当前基准 v${judgmentByBatch[timelineBatchId].standardVersionNo ?? '—'} 实时判定）`}
                       </Typography.Text>
                     ) : null}
                   </div>

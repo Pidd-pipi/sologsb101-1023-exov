@@ -8,13 +8,12 @@ import type { Batch } from '../types/batch';
 import type { Garden } from '../types/garden';
 import {
   ID_PREFIX,
+  commitRoasts,
   createId,
+  getBatch,
   listRoasts,
   listRoastsByBatch,
   nowIso,
-  putRoast,
-  putRoasts,
-  removeRoast as removeRoastRow,
 } from '../utils/db';
 import { buildReminder, fireLevelOf, fireLoadOf } from '../utils/tea';
 import { emptyFilterValue, matchKeyword, pickedIncludes, pickedSelect, type FilterValue } from '../components/common/FilterBar';
@@ -90,49 +89,58 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
   },
 
   async createRoast(draft) {
-    const branch = get().roasts.filter((roast) => roast.batchId === draft.batchId);
     const stamp = nowIso();
     const row: Roast = {
       id: createId(ID_PREFIX.roast),
       batchId: draft.batchId,
-      passNo: branch.length + 1,
+      passNo: 0,
       tempC: draft.tempC,
       hours: draft.hours,
       charcoal: draft.charcoal,
       nextRoastDate: draft.nextRoastDate,
       state: draft.state,
+      rev: 0,
       createdAt: stamp,
       updatedAt: stamp,
     };
-    await putRoast(row);
+    const branch = get().roasts.filter((roast) => roast.batchId === draft.batchId);
+    const upserts = [...branch, row].map((roast, index) => ({ ...roast, passNo: index + 1 }));
+    await commitRoasts(draft.batchId, await roastsRevOf(draft.batchId), { upserts });
     await get().loadRoasts();
-    return row;
+    return (await listRoastsByBatch(draft.batchId)).find((roast) => roast.id === row.id) ?? row;
   },
 
   async updateRoast(roastId, draft) {
     const existing = get().roasts.find((roast) => roast.id === roastId);
     if (!existing) return;
-    const next: Roast = {
-      ...existing,
-      tempC: draft.tempC,
-      hours: draft.hours,
-      charcoal: draft.charcoal,
-      nextRoastDate: draft.nextRoastDate,
-      state: draft.state,
-      updatedAt: nowIso(),
-    };
-    await putRoast(next);
+    const upserts = get()
+      .roasts.filter((roast) => roast.batchId === existing.batchId)
+      .map((roast) =>
+        roast.id === roastId
+          ? {
+              ...roast,
+              tempC: draft.tempC,
+              hours: draft.hours,
+              charcoal: draft.charcoal,
+              nextRoastDate: draft.nextRoastDate,
+              state: draft.state,
+            }
+          : roast,
+      );
+    await commitRoasts(existing.batchId, await roastsRevOf(existing.batchId), { upserts });
     await get().loadRoasts();
   },
 
   async deleteRoast(roastId) {
     const existing = get().roasts.find((roast) => roast.id === roastId);
     if (!existing) return;
-    await removeRoastRow(roastId);
-    const rest = await listRoastsByBatch(existing.batchId);
-    if (rest.length > 0) {
-      await putRoasts(rest.map((roast, index) => ({ ...roast, passNo: index + 1, updatedAt: nowIso() })));
-    }
+    const rest = (await listRoastsByBatch(existing.batchId))
+      .filter((roast) => roast.id !== roastId)
+      .map((roast, index) => ({ ...roast, passNo: index + 1 }));
+    await commitRoasts(existing.batchId, await roastsRevOf(existing.batchId), {
+      upserts: rest,
+      deleteIds: [roastId],
+    });
     await get().loadRoasts();
   },
 
@@ -141,9 +149,12 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
     if (!existing) return null;
     const next = nextRoastState(existing.state);
     if (!next) return null;
-    await putRoast({ ...existing, state: next, updatedAt: nowIso() });
+    const upserts = get()
+      .roasts.filter((roast) => roast.batchId === existing.batchId)
+      .map((roast) => (roast.id === roastId ? { ...roast, state: next } : roast));
+    await commitRoasts(existing.batchId, await roastsRevOf(existing.batchId), { upserts });
     if (next === '已足火') {
-      // 足火判定通过：批次工序推进到「已焙火」
+      // 足火判定通过：批次工序推进到「已焙火」（尚未定稿，不冻结判定）
       await useBatchStore.getState().markBatchState(existing.batchId, '已焙火');
     }
     await get().loadRoasts();
@@ -163,7 +174,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
     const current = swapped[index];
     swapped[index] = swapped[swapIndex];
     swapped[swapIndex] = current;
-    await putRoasts(swapped.map((roast, order) => ({ ...roast, passNo: order + 1, updatedAt: nowIso() })));
+    const upserts = swapped.map((roast, order) => ({ ...roast, passNo: order + 1 }));
+    await commitRoasts(existing.batchId, await roastsRevOf(existing.batchId), { upserts });
     await get().loadRoasts();
   },
 
@@ -177,11 +189,17 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
         const bi = indexOf.has(b.id) ? (indexOf.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
         return ai - bi;
       })
-      .map((roast, index) => ({ ...roast, passNo: index + 1, updatedAt: nowIso() }));
-    await putRoasts(reordered);
+      .map((roast, index) => ({ ...roast, passNo: index + 1 }));
+    await commitRoasts(batchId, await roastsRevOf(batchId), { upserts: reordered });
     await get().loadRoasts();
   },
 }));
+
+/** 读取批次当前焙火乐观锁版本号（每次提交前现读，跨标签页也能拿到对方刚提交后的版本） */
+async function roastsRevOf(batchId: string): Promise<number> {
+  const batch = await getBatch(batchId);
+  return batch?.roastsRev ?? 1;
+}
 
 /** 某批次的道次（按 passNo 升序） */
 export function roastsOfBatch(roasts: Roast[], batchId: string): Roast[] {

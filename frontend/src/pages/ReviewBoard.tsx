@@ -30,6 +30,8 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import JudgmentChain from '../components/common/JudgmentChain';
+import { useProcessJudgment } from '../hooks/useProcessJudgment';
 import { useIdbTable } from '../hooks/useIdbTable';
 import { useGardenStore } from '../stores/gardenStore';
 import { filterReviews, useBatchStore } from '../stores/batchStore';
@@ -67,6 +69,8 @@ export default function ReviewBoard() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingReview, setEditingReview] = useState<Review | null>(null);
   const [previewScore, setPreviewScore] = useState(() => weightedTotalScore(EMPTY_SCORES));
+
+  const { byBatch: judgmentByBatch } = useProcessJudgment();
 
   const gardenMap = useMemo(() => new Map(gardens.map((garden) => [garden.id, garden])), [gardens]);
   const batchMap = useMemo(() => new Map(batches.map((batch) => [batch.id, batch])), [batches]);
@@ -164,7 +168,7 @@ export default function ReviewBoard() {
         message.success(`审评已登记，加权总分 ${totalScore} 分（${scoreGrade(totalScore)}）`);
       }
       const nextState = await markBatchState(values.batchId, '已审评');
-      if (nextState) message.success(`批次工序状态已回写为「${nextState}」`);
+      if (nextState) message.success(`批次已定稿：锁定当前山场基准版本并冻结当时失水 / 火功判定（${nextState}）`);
       setModalOpen(false);
       setEditingReview(null);
     } catch (error) {
@@ -265,6 +269,16 @@ export default function ReviewBoard() {
       },
     },
     {
+      title: '判定链（基准版本 / 失水 / 火功）',
+      key: 'judgment',
+      width: 340,
+      render: (_: unknown, row) => {
+        const judgment = judgmentByBatch[row.batchId];
+        const conclusion = `${row.totalScore} 分 · ${scoreGrade(row.totalScore)}`;
+        return <JudgmentChain judgment={judgment} compact conclusion={conclusion} />;
+      },
+    },
+    {
       title: '操作',
       key: 'action',
       width: 170,
@@ -351,7 +365,7 @@ export default function ReviewBoard() {
         />
       ) : (
         <Card className="panel-card" loading={reviewsTable.loading}>
-          <Table<Review> rowKey="id" size="small" dataSource={rows} columns={columns} pagination={{ pageSize: 8 }} scroll={{ x: 1500 }} />
+          <Table<Review> rowKey="id" size="small" dataSource={rows} columns={columns} pagination={{ pageSize: 8 }} scroll={{ x: 1820 }} />
         </Card>
       )}
 

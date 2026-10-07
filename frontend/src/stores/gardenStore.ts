@@ -8,6 +8,7 @@ import {
   ID_PREFIX,
   countAll,
   createId,
+  ensureStandardForGarden,
   listBatches,
   listGardens,
   listReviews,
@@ -160,6 +161,8 @@ export const useGardenStore = create<GardenStoreState>((set, get) => ({
       updatedAt: stamp,
     };
     await putGarden(row);
+    // 每个山场一份基准：建山场即按车间当前值落 v1，后续调整只发新版本
+    await ensureStandardForGarden(row.id);
     await get().loadGardens();
     set({ currentGardenId: row.id });
     return row;

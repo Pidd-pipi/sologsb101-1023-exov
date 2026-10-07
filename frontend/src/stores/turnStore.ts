@@ -5,7 +5,14 @@
  */
 import { create } from 'zustand';
 import { TURN_LIMITS, type Turn, type TurnDraft, type TurnTemplate } from '../types/turn';
-import { ID_PREFIX, createId, listTurnsByBatch, nowIso, putTurn, putTurns, removeTurn } from '../utils/db';
+import {
+  ID_PREFIX,
+  commitTurns,
+  createId,
+  getBatch,
+  listTurnsByBatch,
+  nowIso,
+} from '../utils/db';
 import { roundTo } from '../utils/tea';
 import { emptyFilterValue, matchKeyword, pickedSelect, type FilterValue } from '../components/common/FilterBar';
 
@@ -98,6 +105,8 @@ export function defaultTurnDraft(batchId: string): TurnDraft {
 interface TurnStoreState {
   turns: Turn[];
   activeBatchId: string | null;
+  /** 当前批次做青记录的乐观锁版本号（提交时与库内 turnsRev 比对） */
+  activeTurnsRev: number;
   filters: FilterValue;
   /** 参数模板：可存可套用 */
   template: TurnTemplate | null;
@@ -121,6 +130,7 @@ interface TurnStoreState {
 export const useTurnStore = create<TurnStoreState>((set, get) => ({
   turns: [],
   activeBatchId: null,
+  activeTurnsRev: 1,
   filters: DEFAULT_TURN_FILTERS,
   template: null,
   loading: false,
@@ -129,13 +139,13 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
   async loadTurns(batchId) {
     const target = batchId ?? get().activeBatchId;
     if (!target) {
-      set({ turns: [], loading: false });
+      set({ turns: [], activeTurnsRev: 1, loading: false });
       return;
     }
     set({ loading: true, error: '' });
     try {
-      const turns = await listTurnsByBatch(target);
-      set({ turns, activeBatchId: target, loading: false });
+      const [turns, batch] = await Promise.all([listTurnsByBatch(target), getBatch(target)]);
+      set({ turns, activeBatchId: target, activeTurnsRev: batch?.turnsRev ?? 1, loading: false });
     } catch (error) {
       set({ loading: false, error: error instanceof Error ? error.message : '做青轮次读取失败' });
     }
@@ -155,46 +165,63 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
   },
 
   async createTurn(draft) {
-    const current = get().turns.filter((turn) => turn.batchId === draft.batchId);
     const stamp = nowIso();
     const row: Turn = {
       id: createId(ID_PREFIX.turn),
       batchId: draft.batchId,
-      roundNo: current.length + 1,
+      roundNo: 0,
       shakeMin: draft.shakeMin,
       restMin: draft.restMin,
       roomTempC: draft.roomTempC,
       humidityPct: draft.humidityPct,
       waterLossPct: draft.waterLossPct,
+      rev: 0,
       createdAt: stamp,
       updatedAt: stamp,
     };
-    await putTurn(row);
+    const branch = get().turns.filter((turn) => turn.batchId === draft.batchId);
+    const upserts = [...branch, row].map((turn, index) => ({ ...turn, roundNo: index + 1 }));
+    // 乐观锁：别的标签页刚提交过时 turnsRev 已变，本次整批回滚，不盖掉对方记录
+    const nextRev = await commitTurns(draft.batchId, get().activeTurnsRev, { upserts });
     await get().loadTurns(draft.batchId);
-    return row;
+    set({ activeTurnsRev: nextRev });
+    return (await listTurnsByBatch(draft.batchId)).find((turn) => turn.id === row.id) ?? row;
   },
 
   async updateTurn(turnId, draft) {
     const existing = get().turns.find((turn) => turn.id === turnId);
     if (!existing) return;
-    const next: Turn = {
-      ...existing,
-      shakeMin: draft.shakeMin,
-      restMin: draft.restMin,
-      roomTempC: draft.roomTempC,
-      humidityPct: draft.humidityPct,
-      waterLossPct: draft.waterLossPct,
-      updatedAt: nowIso(),
-    };
-    await putTurn(next);
+    const upserts = get()
+      .turns.filter((turn) => turn.batchId === existing.batchId)
+      .map((turn) =>
+        turn.id === turnId
+          ? {
+              ...turn,
+              shakeMin: draft.shakeMin,
+              restMin: draft.restMin,
+              roomTempC: draft.roomTempC,
+              humidityPct: draft.humidityPct,
+              waterLossPct: draft.waterLossPct,
+            }
+          : turn,
+      );
+    const nextRev = await commitTurns(existing.batchId, get().activeTurnsRev, { upserts });
     await get().loadTurns(existing.batchId);
+    set({ activeTurnsRev: nextRev });
   },
 
   async deleteTurn(turnId) {
     const existing = get().turns.find((turn) => turn.id === turnId);
     if (!existing) return;
-    await removeTurn(turnId);
-    await get().renumber(existing.batchId);
+    const branch = get()
+      .turns.filter((turn) => turn.batchId === existing.batchId && turn.id !== turnId)
+      .map((turn, index) => ({ ...turn, roundNo: index + 1 }));
+    const nextRev = await commitTurns(existing.batchId, get().activeTurnsRev, {
+      upserts: branch,
+      deleteIds: [turnId],
+    });
+    await get().loadTurns(existing.batchId);
+    set({ activeTurnsRev: nextRev });
   },
 
   async copyPreviousTurn(batchId) {
@@ -248,16 +275,23 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
         const bi = indexOf.has(b.id) ? (indexOf.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
         return ai - bi;
       })
-      .map((turn, index) => ({ ...turn, roundNo: index + 1, updatedAt: nowIso() }));
-    await putTurns(reordered);
+      .map((turn, index) => ({ ...turn, roundNo: index + 1 }));
+    const nextRev = await commitTurns(activeBatchId, get().activeTurnsRev, { upserts: reordered });
     await get().loadTurns(activeBatchId);
+    set({ activeTurnsRev: nextRev });
   },
 
   async renumber(batchId) {
+    // 保留给非 CAS 场景兜底：正常删除路径已在 deleteTurn 里随提交一次性重排
     const rows = await listTurnsByBatch(batchId);
     const renumbered = rows.map((turn, index) => ({ ...turn, roundNo: index + 1, updatedAt: nowIso() }));
-    if (renumbered.length > 0) await putTurns(renumbered);
-    if (get().activeBatchId === batchId) await get().loadTurns(batchId);
+    if (renumbered.length === 0) return;
+    const batch = await getBatch(batchId);
+    const nextRev = await commitTurns(batchId, batch?.turnsRev ?? 1, { upserts: renumbered });
+    if (get().activeBatchId === batchId) {
+      await get().loadTurns(batchId);
+      set({ activeTurnsRev: nextRev });
+    }
   },
 }));
 

@@ -72,6 +72,10 @@ export interface BlendCandidate {
   gardenName: string;
   cultivar: string;
   totalScore: number;
+  /** 工艺贴合度 0-100（失水 + 足火），基准改动后候选随之重排 */
+  conformanceScore: number;
+  /** 判定是否已定稿冻结（已定稿保住当时判定，未定稿按现行基准复算） */
+  judgmentFrozen: boolean;
   state: string;
   pickedAt: string;
 }

@@ -29,6 +29,8 @@ export interface Turn {
   humidityPct: number;
   /** 本轮结束时累计失水率 % */
   waterLossPct: number;
+  /** 行级乐观锁版本号（并发提交冲突时由批次 turnsRev 统一拦截，行内留痕便于排查） */
+  rev: number;
   createdAt: string;
   updatedAt: string;
 }

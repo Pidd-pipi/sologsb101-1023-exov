@@ -34,6 +34,8 @@ export interface Roast {
   nextRoastDate: string;
   /** 焙火状态 */
   state: RoastState;
+  /** 行级乐观锁版本号（并发提交冲突时由批次 roastsRev 统一拦截，行内留痕便于排查） */
+  rev: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -7,6 +7,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Badge, Button, Layout, Menu, Space, Tag, Typography, message } from 'antd';
 import {
   AppstoreOutlined,
+  AuditOutlined,
   ExperimentOutlined,
   FireOutlined,
   GoldOutlined,
@@ -25,6 +26,7 @@ const { Header, Sider, Content, Footer } = Layout;
 /** 导航图标：按字面路径索引，避免在模块初始化期读取 router 的导出（消除 App ↔ router 循环依赖） */
 const NAV_ICON: Record<string, ReactNode> = {
   '/gardens': <AppstoreOutlined />,
+  '/standards': <AuditOutlined />,
   '/turns': <ExperimentOutlined />,
   '/fixing': <GoldOutlined />,
   '/roasting': <FireOutlined />,
@@ -111,7 +113,7 @@ export default function App() {
             }))}
           />
           <div style={{ padding: '14px 16px', color: 'rgba(238,245,230,0.66)', fontSize: 12, lineHeight: 1.9 }}>
-            <div>山场 {counts.gardens ?? 0} · 批次 {counts.batches ?? 0}</div>
+            <div>山场 {counts.gardens ?? 0} · 基准 {counts.standards ?? 0} · 批次 {counts.batches ?? 0}</div>
             <div>轮次 {counts.turns ?? 0} · 杀青 {counts.fixes ?? 0}</div>
             <div>焙火 {counts.roasts ?? 0} · 审评 {counts.reviews ?? 0}</div>
           </div>

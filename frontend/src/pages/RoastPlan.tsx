@@ -35,13 +35,14 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import JudgmentChain from '../components/common/JudgmentChain';
+import { useProcessJudgment } from '../hooks/useProcessJudgment';
 import { useGardenStore } from '../stores/gardenStore';
 import { useBatchStore } from '../stores/batchStore';
+import { ConcurrencyConflictError } from '../utils/db';
 import {
   buildReminders,
   filterRoasts,
-  fireLevelOfBatch,
-  fireLoadOfBatch,
   roastsOfBatch,
   useRoastStore,
 } from '../stores/roastStore';
@@ -49,12 +50,9 @@ import { CHARCOAL_OPTIONS, ROAST_LIMITS, ROAST_STATES, type Roast, type RoastDra
 import type { Batch } from '../types/batch';
 import {
   CHARCOAL_COLOR,
-  FIRE_LEVEL_ADVICE,
-  FIRE_THRESHOLDS,
   REMINDER_COLOR,
   REMINDER_LABEL,
   batchLabel,
-  isFullFire,
   roundTo,
 } from '../utils/tea';
 
@@ -84,7 +82,8 @@ export default function RoastPlan() {
   }, [loadRoasts]);
 
   const gardenMap = useMemo(() => new Map(gardens.map((garden) => [garden.id, garden])), [gardens]);
-  const batchMap = useMemo(() => new Map(batches.map((batch) => [batch.id, batch])), [batches]);
+  const batchMap = useMemo(() => new Map(batches.map((batch) => [batch.id, batch])), [gardens, batches]);
+  const { byBatch: judgmentByBatch, activeByGarden } = useProcessJudgment();
   const labelOfBatch = (batchId: string): string => {
     const batch = batchMap.get(batchId);
     if (!batch) return '未知批次';
@@ -182,7 +181,12 @@ export default function RoastPlan() {
       setModalOpen(false);
       setEditingRoast(null);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '焙火记录保存失败');
+      if (error instanceof ConcurrencyConflictError) {
+        message.error(error.message);
+        await loadRoasts();
+      } else {
+        message.error(error instanceof Error ? error.message : '焙火记录保存失败');
+      }
     }
   };
 
@@ -205,11 +209,16 @@ export default function RoastPlan() {
   };
 
   const handleAdvance = async (roast: Roast): Promise<void> => {
-    const next = await advanceRoastState(roast.id);
-    if (next) {
-      message.success(`第 ${roast.passNo} 道状态已推进到「${next}」${next === '已足火' ? '，批次已回写为「已焙火」' : ''}`);
-    } else {
-      message.info('该道次已是「已足火」');
+    try {
+      const next = await advanceRoastState(roast.id);
+      if (next) {
+        message.success(`第 ${roast.passNo} 道状态已推进到「${next}」${next === '已足火' ? '，批次已回写为「已焙火」' : ''}`);
+      } else {
+        message.info('该道次已是「已足火」');
+      }
+    } catch (error) {
+      message.error(error instanceof ConcurrencyConflictError ? error.message : error instanceof Error ? error.message : '状态推进失败');
+      await loadRoasts();
     }
   };
 
@@ -221,8 +230,7 @@ export default function RoastPlan() {
             焙火曲线与复焙安排
           </Typography.Title>
           <div className="page-hint">
-            多道次按序排列，逐道推进「待焙 → 焙火中 → 已足火」；累计热负荷达到 {FIRE_THRESHOLDS.full} ℃·h 且不
-            少于两道次即判定足火。
+            多道次按序排列，逐道推进「待焙 → 焙火中 → 已足火」；中火 / 足火阈值取自山场焙火基准，基准改动后未定稿批次立即重算，已定稿批次保住当时火功判定。
           </div>
         </div>
         <Space wrap>
@@ -311,9 +319,14 @@ export default function RoastPlan() {
         <Row gutter={[14, 14]}>
           {grouped.map((group) => {
             const branch = roastsOfBatch(roasts, group.batchId);
-            const fireLevel = fireLevelOfBatch(roasts, group.batchId);
-            const load = fireLoadOfBatch(roasts, group.batchId);
-            const fullFire = isFullFire(branch);
+            const judgment = judgmentByBatch[group.batchId];
+            const fireLevel = judgment?.fireLevel ?? '轻火';
+            const load = judgment?.fireLoad ?? 0;
+            const fullFire = judgment?.fullFire ?? false;
+            const batch = batchMap.get(group.batchId);
+            const standard = batch ? activeByGarden[batch.gardenId] : undefined;
+            const fullThreshold = standard?.fireFullLoad;
+            const fullPassesMin = standard?.fullFirePassesMin;
             return (
               <Col key={group.batchId} xs={24} xl={12}>
                 <Card
@@ -336,11 +349,22 @@ export default function RoastPlan() {
                   <Space size={16} wrap style={{ marginBottom: 10 }}>
                     <StatBadge size="small" label="道次" value={branch.length} suffix="道" />
                     <StatBadge size="small" label="累计热负荷" value={load} suffix="℃·h" tone="warning" />
-                    <StatBadge size="small" label="足火阈值" value={FIRE_THRESHOLDS.full} suffix="℃·h" />
+                    <StatBadge
+                      size="small"
+                      label="基准足火阈值"
+                      value={fullThreshold ?? '—'}
+                      suffix={fullPassesMin ? `℃·h / ${fullPassesMin} 道` : '℃·h'}
+                    />
                   </Space>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {FIRE_LEVEL_ADVICE[fireLevel]}
+                    {judgment?.frozen
+                      ? `已定稿：火功判定按基准 v${judgment.standardVersionNo ?? '—'} 冻结（${judgment.standardNote}）`
+                      : `跟随基准 v${judgment?.standardVersionNo ?? '—'} 实时判定：${judgment?.standardNote ?? ''}`}
                   </Typography.Text>
+
+                  <div style={{ marginTop: 8 }}>
+                    <JudgmentChain judgment={judgment} compact conclusion={judgment?.frozen ? '判定已冻结' : undefined} />
+                  </div>
 
                   <div style={{ marginTop: 10 }}>
                     {group.list.map((roast, index) => (

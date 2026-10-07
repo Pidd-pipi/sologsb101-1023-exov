@@ -3,6 +3,8 @@
  * 状态流转：做青中 → 已杀青 → 已焙火 → 已审评
  */
 
+import type { ProcessJudgment } from './standard';
+
 /** 嫩度枚举 */
 export const TENDERNESS_OPTIONS = ['一芽两叶', '一芽三叶', '开面采'] as const;
 export type Tenderness = (typeof TENDERNESS_OPTIONS)[number];
@@ -26,6 +28,16 @@ export interface Batch {
   weather: string;
   /** 工序状态 */
   state: BatchState;
+  /** 定稿时锁定的山场基准版本号；未定稿为 null（始终跟随山场当前基准重算） */
+  standardVersionNo: number | null;
+  /** 定稿时间（进入「已审评」时记录），未定稿为 null */
+  finalizedAt: string | null;
+  /** 定稿时按当时基准冻结的工艺判定（失水 / 火功 / 贴合度），基准再改也不重算 */
+  frozenJudgment: ProcessJudgment | null;
+  /** 做青记录乐观锁：两个标签页同时提交时，晚到者版本号不匹配被拒 */
+  turnsRev: number;
+  /** 焙火道次乐观锁，语义同 turnsRev */
+  roastsRev: number;
   createdAt: string;
   updatedAt: string;
 }
