@@ -12,7 +12,9 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import { JudgmentChainTag } from '../components/common/JudgmentChain';
 import { useIdbTable } from '../hooks/useIdbTable';
+import { useJudgmentChain } from '../hooks/useJudgmentChain';
 import { useGardenStore } from '../stores/gardenStore';
 import { filterBlendCandidates, useBatchStore } from '../stores/batchStore';
 import { db, exportSnapshot } from '../utils/db';
@@ -25,8 +27,14 @@ import {
   type BlendPlanItem,
 } from '../utils/export';
 import { BATCH_STATES } from '../types/batch';
-import type { BlendCandidate, Review } from '../types/review';
-import { SCORE_BANDS, buildBlendCandidates, isBlendCandidate, roundTo } from '../utils/tea';
+import type { BlendCandidate, ProjectedCandidate, Review } from '../types/review';
+import {
+  SCORE_BANDS,
+  buildBlendCandidates,
+  buildProjectedCandidates,
+  isBlendCandidate,
+  roundTo,
+} from '../utils/tea';
 
 export default function BlendPlan() {
   const { message } = App.useApp();
@@ -56,6 +64,13 @@ export default function BlendPlan() {
     [batches, gardens, reviewsTable.rows],
   );
   const rows = useMemo(() => filterBlendCandidates(candidates, blendFilters), [blendFilters, candidates]);
+
+  // 判定链：未定稿批次按当前基准推算投影分并排序，基准改版立即重排；已定稿候选不受影响
+  const { verdicts } = useJudgmentChain();
+  const projected = useMemo(
+    () => buildProjectedCandidates(verdicts, batches, gardens),
+    [verdicts, batches, gardens],
+  );
 
   const selectedKeys = useMemo(() => blendDraft.map((item) => item.batchId), [blendDraft]);
   const ratioOf = (batchId: string): number => blendDraft.find((item) => item.batchId === batchId)?.ratioPct ?? 0;
@@ -179,8 +194,19 @@ export default function BlendPlan() {
     {
       title: '候选资格',
       key: 'candidate',
-      width: 110,
-      render: (_: unknown, row) => (isBlendCandidate(row.totalScore) ? <Tag color="volcano">候选</Tag> : <Tag>待复评</Tag>),
+      width: 150,
+      render: (_: unknown, row) =>
+        isBlendCandidate(row.totalScore) ? (
+          <Tag color="volcano">{row.finalized ? '候选 · 已定稿' : '候选'}</Tag>
+        ) : (
+          <Tag>待复评</Tag>
+        ),
+    },
+    {
+      title: '判定基准',
+      key: 'verdict',
+      width: 120,
+      render: (_: unknown, row) => <JudgmentChainTag verdict={verdicts.get(row.batchId)} />,
     },
     {
       title: '工序状态',
@@ -400,6 +426,63 @@ export default function BlendPlan() {
           </Col>
         </Row>
       )}
+
+      {projected.length > 0 ? (
+        <Card
+          className="panel-card"
+          style={{ marginTop: 14 }}
+          title={
+            <Space size={8} wrap>
+              <span>待定稿投影候选（随基准重排）</span>
+              <Tag color="gold">{projected.length} 款</Tag>
+              <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 'normal' }}>
+                尚未审评定稿，火功已达当前基准且失水到位；投影分按当前基准实时推算，基准一改版立即重排，审评定稿后转入上方正式候选并冻结名次。
+              </Typography.Text>
+            </Space>
+          }
+        >
+          <Table<ProjectedCandidate>
+            rowKey="batchId"
+            size="small"
+            dataSource={projected}
+            pagination={false}
+            scroll={{ x: 980 }}
+            columns={[
+              { title: '预测名次', key: 'rank', width: 90, render: (_v, _r, i) => `第 ${i + 1} 名` },
+              { title: '毛茶批次', dataIndex: 'batchLabel', width: 250 },
+              { title: '山场', dataIndex: 'gardenName', width: 110 },
+              {
+                title: '火功（基准判定）',
+                key: 'fire',
+                width: 220,
+                render: (_v, row) => (
+                  <Space size={6} wrap>
+                    <GradeTag kind="fire" value={row.fireLevel} showIcon={false} />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {row.fireLoad} ℃·h / {row.roastPassCount} 道
+                    </Typography.Text>
+                  </Space>
+                ),
+              },
+              { title: '失水', dataIndex: 'waterLossPct', width: 90, render: (v: number) => `${v}%` },
+              {
+                title: '投影分',
+                dataIndex: 'projectedScore',
+                width: 120,
+                sorter: (a, b) => a.projectedScore - b.projectedScore,
+                defaultSortOrder: 'descend',
+                render: (v: number) => <GradeTag kind="score" value={v} showIcon={false} />,
+              },
+              {
+                title: '基准版本',
+                dataIndex: 'standardRev',
+                width: 110,
+                render: (v: number) => <Tag color="gold">当前 v{v}</Tag>,
+              },
+            ]}
+          />
+        </Card>
+      ) : null}
     </div>
   );
 }

@@ -17,6 +17,7 @@ import { NAV_ORDER, ROUTES, ROUTE_META } from './router';
 import { useGardenStore } from './stores/gardenStore';
 import { useBatchStore } from './stores/batchStore';
 import { useRoastStore } from './stores/roastStore';
+import { useStandardStore } from './stores/standardStore';
 import { initDatabase } from './utils/db';
 import { batchLabel } from './utils/tea';
 
@@ -49,6 +50,7 @@ export default function App() {
   const loadReviews = useBatchStore((state) => state.loadReviews);
 
   const loadRoasts = useRoastStore((state) => state.loadRoasts);
+  const loadStandards = useStandardStore((state) => state.loadStandards);
 
   // 首次进入：打开数据库（必要时播种）→ 加载各 store 的跨页数据
   useEffect(() => {
@@ -57,7 +59,7 @@ export default function App() {
       try {
         await initDatabase();
         if (cancelled) return;
-        await Promise.all([loadGardens(), loadBatches(), loadRoasts(), loadReviews()]);
+        await Promise.all([loadGardens(), loadBatches(), loadRoasts(), loadReviews(), loadStandards()]);
       } catch (error) {
         if (cancelled) return;
         messageApi.error(`本地数据库初始化失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -66,7 +68,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadBatches, loadGardens, loadReviews, loadRoasts, messageApi]);
+  }, [loadBatches, loadGardens, loadReviews, loadRoasts, loadStandards, messageApi]);
 
   // 导航标题（每个路由带 meta.title 的等价实现）
   useEffect(() => {

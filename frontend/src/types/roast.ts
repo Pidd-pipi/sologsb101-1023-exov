@@ -34,6 +34,8 @@ export interface Roast {
   nextRoastDate: string;
   /** 焙火状态 */
   state: RoastState;
+  /** 落库时该批次所属山场基准的版本号（判定链留痕，仅作追溯展示） */
+  standardRev: number;
   createdAt: string;
   updatedAt: string;
 }

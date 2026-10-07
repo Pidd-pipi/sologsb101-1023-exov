@@ -5,7 +5,7 @@
  */
 import { ALTITUDE_BANDS, type Cultivar, type Garden, type Soil } from '../types/garden';
 import type { Batch, BatchState, Tenderness } from '../types/batch';
-import { TURN_LIMITS, type Turn } from '../types/turn';
+import type { Turn } from '../types/turn';
 import type { FixLevel, RollPressure } from '../types/fix';
 import {
   ROAST_STATES,
@@ -21,9 +21,19 @@ import {
   REVIEW_TOTAL_MAX,
   REVIEW_WEIGHTS,
   type BlendCandidate,
+  type ProjectedCandidate,
   type Review,
   type ReviewScoreKey,
 } from '../types/review';
+import {
+  DEFAULT_ROAST_BASELINE,
+  DEFAULT_TURN_BASELINE,
+  type BatchVerdict,
+  type GardenStandard,
+  type RoastBaseline,
+  type TurnBaseline,
+  type WaterVerdictLevel,
+} from '../types/standard';
 
 /* ------------------------------ 嫩度映射 ------------------------------ */
 
@@ -139,48 +149,85 @@ export interface RangeVerdict {
   hint: string;
 }
 
-/** 做青室温判定：目标 20-26 ℃ */
-export function judgeRoomTemp(tempC: number): RangeVerdict {
-  if (tempC < 20) {
+/** 通用区间判定：低于下限 / 落在区间 / 高于上限 */
+export function judgeRange(
+  value: number,
+  min: number,
+  max: number,
+  labels: { low: RangeVerdict; high: RangeVerdict; ok: RangeVerdict },
+): RangeVerdict {
+  if (value < min) return labels.low;
+  if (value > max) return labels.high;
+  return labels.ok;
+}
+
+/** 做青室温判定：按山场做青基准的室温区间（默认 20-26 ℃） */
+export function judgeRoomTemp(tempC: number, baseline: TurnBaseline = DEFAULT_TURN_BASELINE): RangeVerdict {
+  if (tempC < baseline.roomTempMinC) {
     return { level: 'low', label: '室温偏低', hint: '可关窗升温，摇青后静置时间适当缩短' };
   }
-  if (tempC > 26) {
+  if (tempC > baseline.roomTempMaxC) {
     return { level: 'high', label: '室温偏高', hint: '注意通风降温，防止红边过快' };
   }
-  return { level: 'ok', label: '室温适宜', hint: '适宜做青走水（20-26 ℃）' };
+  return { level: 'ok', label: '室温适宜', hint: `适宜做青走水（${baseline.roomTempMinC}-${baseline.roomTempMaxC} ℃）` };
 }
 
-/** 做青湿度判定：目标 60-80 % */
-export function judgeHumidity(humidityPct: number): RangeVerdict {
-  if (humidityPct < 60) {
+/** 做青湿度判定：按山场做青基准的湿度区间（默认 60-80 %） */
+export function judgeHumidity(humidityPct: number, baseline: TurnBaseline = DEFAULT_TURN_BASELINE): RangeVerdict {
+  if (humidityPct < baseline.humidityMinPct) {
     return { level: 'low', label: '湿度偏低', hint: '地面洒水或缩短静置，避免失水过快' };
   }
-  if (humidityPct > 80) {
+  if (humidityPct > baseline.humidityMaxPct) {
     return { level: 'high', label: '湿度偏高', hint: '加强通风，延长静置走水时间' };
   }
-  return { level: 'ok', label: '湿度适宜', hint: '适宜走水（60-80 %）' };
+  return { level: 'ok', label: '湿度适宜', hint: `适宜走水（${baseline.humidityMinPct}-${baseline.humidityMaxPct} %）` };
 }
 
-/** 失水率判定：做青全程目标 12-20 % */
-export function judgeWaterLoss(waterLossPct: number): RangeVerdict {
-  if (waterLossPct < 12) {
+/** 失水率判定：按山场做青基准的全程失水区间（默认 12-20 %） */
+export function judgeWaterLoss(waterLossPct: number, baseline: TurnBaseline = DEFAULT_TURN_BASELINE): RangeVerdict {
+  if (waterLossPct < baseline.waterLossMinPct) {
     return { level: 'low', label: '失水不足', hint: '尚需补 1-2 轮摇青，继续走水' };
   }
-  if (waterLossPct > 20) {
+  if (waterLossPct > baseline.waterLossMaxPct) {
     return { level: 'high', label: '失水偏多', hint: '及时杀青，避免叶张干脆' };
   }
-  return { level: 'ok', label: '失水到位', hint: '可进入杀青工序（12-20 %）' };
+  return {
+    level: 'ok',
+    label: '失水到位',
+    hint: `可进入杀青工序（${baseline.waterLossMinPct}-${baseline.waterLossMaxPct} %）`,
+  };
 }
 
-/** 摇青时长判定：单轮 3-12 分钟为宜 */
-export function judgeShakeMin(shakeMin: number): RangeVerdict {
-  if (shakeMin < TURN_LIMITS.shakeMin.min + 3) {
+/** 失水率 → 三档结论（判定链与定稿冻结共用，避免重复文案） */
+export function waterVerdictLevel(waterLossPct: number, baseline: TurnBaseline = DEFAULT_TURN_BASELINE): WaterVerdictLevel {
+  if (waterLossPct < baseline.waterLossMinPct) return 'low';
+  if (waterLossPct > baseline.waterLossMaxPct) return 'high';
+  return 'ok';
+}
+
+/** 失水判定结论 → 中文短标签 */
+export const WATER_VERDICT_LABEL: Record<WaterVerdictLevel, string> = {
+  low: '失水不足',
+  ok: '失水到位',
+  high: '失水偏多',
+};
+
+/** 失水判定结论 → 标签底色 */
+export const WATER_VERDICT_COLOR: Record<WaterVerdictLevel, string> = {
+  low: 'blue',
+  ok: 'green',
+  high: 'orange',
+};
+
+/** 摇青时长判定：以山场基准的单轮摇青分钟为下沿（基准 +3 分钟内视为偏轻） */
+export function judgeShakeMin(shakeMin: number, baseline: TurnBaseline = DEFAULT_TURN_BASELINE): RangeVerdict {
+  if (shakeMin < baseline.shakeBaseMin) {
     return { level: 'low', label: '摇青偏轻', hint: '可增加 1-2 分钟摇青促进走水' };
   }
   if (shakeMin > 12) {
     return { level: 'high', label: '摇青偏重', hint: '注意叶缘红边程度，下一轮适当减时' };
   }
-  return { level: 'ok', label: '摇青适宜', hint: '单轮 3-12 分钟为宜' };
+  return { level: 'ok', label: '摇青适宜', hint: `单轮不低于基准 ${baseline.shakeBaseMin} 分钟、12 分钟以内为宜` };
 }
 
 /** 杀青强度判定：锅温与时长综合 */
@@ -193,10 +240,10 @@ export function judgeFixLevel(wokTempC: number, fixMin: number, rollPressure: Ro
   return '适中';
 }
 
-/** 火功判定：按累计「温度 × 时长」换算（℃·h） */
+/** 火功判定阈值：取内置焙火基准（向后兼容旧调用方） */
 export const FIRE_THRESHOLDS = {
-  medium: 600,
-  full: 1500,
+  medium: DEFAULT_ROAST_BASELINE.mediumLoad,
+  full: DEFAULT_ROAST_BASELINE.fullLoad,
 } as const;
 
 /** 焙火累计热负荷（℃·h） */
@@ -207,11 +254,18 @@ export function fireLoadOf(roasts: Roast[]): number {
   );
 }
 
-/** 多道次焙火 → 火功档位 */
-export function fireLevelOf(roasts: Roast[]): FireLevel {
+/** 多道次焙火 → 火功档位（按山场焙火基准的累计热负荷阈值） */
+export function fireLevelOf(roasts: Roast[], baseline: RoastBaseline = DEFAULT_ROAST_BASELINE): FireLevel {
   const load = fireLoadOf(roasts);
-  if (load >= FIRE_THRESHOLDS.full) return '足火';
-  if (load >= FIRE_THRESHOLDS.medium) return '中火';
+  if (load >= baseline.fullLoad) return '足火';
+  if (load >= baseline.mediumLoad) return '中火';
+  return '轻火';
+}
+
+/** 由累计热负荷直接判火功（定稿回放与判定链共用） */
+export function fireLevelFromLoad(load: number, baseline: RoastBaseline = DEFAULT_ROAST_BASELINE): FireLevel {
+  if (load >= baseline.fullLoad) return '足火';
+  if (load >= baseline.mediumLoad) return '中火';
   return '轻火';
 }
 
@@ -229,9 +283,9 @@ export const FIRE_LEVEL_ADVICE: Record<FireLevel, string> = {
   足火: '已吃足火，进入退火期，静置 30 天以上再开汤审评',
 };
 
-/** 是否达到足火（热负荷达标且至少两道次） */
-export function isFullFire(roasts: Roast[]): boolean {
-  return fireLoadOf(roasts) >= FIRE_THRESHOLDS.full && roasts.length >= 2;
+/** 是否达到足火（按基准热负荷达标且道次数不少于基准下限） */
+export function isFullFire(roasts: Roast[], baseline: RoastBaseline = DEFAULT_ROAST_BASELINE): boolean {
+  return fireLoadOf(roasts) >= baseline.fullLoad && roasts.length >= baseline.fullMinPasses;
 }
 
 /** 批次当前焙火状态（无记录按「待焙」处理） */
@@ -356,9 +410,96 @@ export function matchScoreBand(score: number, bandKeys: string[]): boolean {
   });
 }
 
+/* ----------------------------- 判定链 ----------------------------- */
+
+/** 当前生效基准索引：gardenId → 当前山场基准（无则缺省） */
+export function currentStandardMap(standards: GardenStandard[]): Map<string, GardenStandard> {
+  const map = new Map<string, GardenStandard>();
+  standards.forEach((standard) => {
+    if (!standard.isCurrent) return;
+    map.set(standard.gardenId, standard);
+  });
+  return map;
+}
+
+/**
+ * 计算全部批次在判定链上的结论。
+ * - 已定稿（审评记录带 frozen）：失水 / 火功 / 基准版本全部取冻结快照，保住当时判定；
+ * - 未定稿：按所属山场当前基准实时算失水与火功，基准改版立即重算。
+ */
+export function buildBatchVerdicts(params: {
+  batches: Batch[];
+  turns: Turn[];
+  roasts: Roast[];
+  reviews: Review[];
+  standards: GardenStandard[];
+}): Map<string, BatchVerdict> {
+  const { batches, turns, roasts, reviews, standards } = params;
+  const currentMap = currentStandardMap(standards);
+  const frozenByBatch = new Map<string, Review>();
+  reviews.forEach((review) => {
+    if (review.frozen && !frozenByBatch.has(review.batchId)) frozenByBatch.set(review.batchId, review);
+  });
+  const turnsByBatch = new Map<string, Turn[]>();
+  turns.forEach((turn) => {
+    turnsByBatch.set(turn.batchId, [...(turnsByBatch.get(turn.batchId) ?? []), turn]);
+  });
+  const roastsByBatch = new Map<string, Roast[]>();
+  roasts.forEach((roast) => {
+    roastsByBatch.set(roast.batchId, [...(roastsByBatch.get(roast.batchId) ?? []), roast]);
+  });
+
+  const result = new Map<string, BatchVerdict>();
+  batches.forEach((batch) => {
+    const current = currentMap.get(batch.gardenId);
+    const frozenReview = frozenByBatch.get(batch.id);
+
+    if (frozenReview?.frozen) {
+      const frozen = frozenReview.frozen;
+      result.set(batch.id, {
+        batchId: batch.id,
+        gardenId: batch.gardenId,
+        standardRev: frozen.standardRev,
+        finalized: true,
+        hasStandard: true,
+        turn: frozen.standard.turn,
+        roast: frozen.standard.roast,
+        waterLossPct: frozen.waterLossPct,
+        waterVerdict: frozen.waterVerdict,
+        fireLoad: frozen.fireLoad,
+        fireLevel: frozen.fireLevel,
+        roastPassCount: frozen.roastPassCount,
+      });
+      return;
+    }
+
+    const turnBaseline = current?.turn ?? DEFAULT_TURN_BASELINE;
+    const roastBaseline = current?.roast ?? DEFAULT_ROAST_BASELINE;
+    const branchTurns = turnsByBatch.get(batch.id) ?? [];
+    const branchRoasts = roastsByBatch.get(batch.id) ?? [];
+    const waterLossPct = finalWaterLoss(branchTurns);
+    const fireLoad = fireLoadOf(branchRoasts);
+    result.set(batch.id, {
+      batchId: batch.id,
+      gardenId: batch.gardenId,
+      standardRev: current?.rev ?? 0,
+      finalized: false,
+      hasStandard: Boolean(current),
+      turn: turnBaseline,
+      roast: roastBaseline,
+      waterLossPct,
+      waterVerdict: waterVerdictLevel(waterLossPct, turnBaseline),
+      fireLoad,
+      fireLevel: fireLevelFromLoad(fireLoad, roastBaseline),
+      roastPassCount: branchRoasts.length,
+    });
+  });
+  return result;
+}
+
 /* ----------------------------- 拼配候选 ----------------------------- */
 
-/** 按总分由高到低生成拼配候选清单 */
+/** 按总分由高到低生成已定稿拼配候选清单（冻结结论，基准改版不改变其名次） */
 export function buildBlendCandidates(reviews: Review[], batches: Batch[], gardens: Garden[]): BlendCandidate[] {
   const batchMap = new Map(batches.map((batch) => [batch.id, batch]));
   const gardenMap = new Map(gardens.map((garden) => [garden.id, garden]));
@@ -377,12 +518,65 @@ export function buildBlendCandidates(reviews: Review[], batches: Batch[], garden
         totalScore: review.totalScore,
         state: batch.state,
         pickedAt: batch.pickedAt,
+        finalized: Boolean(review.frozen),
+        standardRev: review.frozen?.standardRev ?? 0,
       };
     })
     .sort((a, b) => b.totalScore - a.totalScore);
 }
 
-/** 是否达到拼配候选门槛 */
+/**
+ * 待定稿候选的投影分：由当前基准 + 实际火功 / 失水推算（0-100，保留 1 位小数）。
+ * 与审评总分同量纲，可与已定稿候选同榜比较；基准改版即重算，名次随之重排。
+ */
+export function projectedScoreOf(verdict: BatchVerdict): number {
+  const loadRatio = verdict.roast.fullLoad > 0 ? Math.min(1, verdict.fireLoad / verdict.roast.fullLoad) : 0;
+  let score = 72 + loadRatio * 18;
+  if (verdict.fireLevel === '足火') score += 3;
+  else if (verdict.fireLevel === '中火') score += 1;
+  score += verdict.waterVerdict === 'ok' ? 4 : -3;
+  return roundTo(Math.max(0, Math.min(100, score)), 1);
+}
+
+/**
+ * 生成待定稿拼配候选：尚无审评、但火功已达「中火」且失水到位的批次。
+ * 全部按当前基准实时推算投影分并由高到低排序 —— 基准一改版，这里立即重排。
+ */
+export function buildProjectedCandidates(
+  verdicts: Map<string, BatchVerdict>,
+  batches: Batch[],
+  gardens: Garden[],
+): ProjectedCandidate[] {
+  const gardenMap = new Map(gardens.map((garden) => [garden.id, garden]));
+  const list: ProjectedCandidate[] = [];
+  batches.forEach((batch) => {
+    const verdict = verdicts.get(batch.id);
+    if (!verdict || verdict.finalized) return;
+    if (verdict.roastPassCount === 0) return;
+    if (!(verdict.fireLevel === '中火' || verdict.fireLevel === '足火')) return;
+    if (verdict.waterVerdict !== 'ok') return;
+    const garden = gardenMap.get(batch.gardenId);
+    list.push({
+      batchId: batch.id,
+      batchLabel: batchLabel(batch, garden?.name),
+      gardenId: batch.gardenId,
+      gardenName: garden?.name ?? '未知山场',
+      cultivar: garden?.cultivar ?? '未标注',
+      state: batch.state,
+      pickedAt: batch.pickedAt,
+      standardRev: verdict.standardRev,
+      waterLossPct: verdict.waterLossPct,
+      waterVerdict: verdict.waterVerdict,
+      fireLoad: verdict.fireLoad,
+      fireLevel: verdict.fireLevel,
+      roastPassCount: verdict.roastPassCount,
+      projectedScore: projectedScoreOf(verdict),
+    });
+  });
+  return list.sort((a, b) => b.projectedScore - a.projectedScore || b.fireLoad - a.fireLoad);
+}
+
+/** 是否达到拼配候选门槛（按审评总分，定稿候选） */
 export function isBlendCandidate(score: number): boolean {
   return score >= BLEND_CANDIDATE_SCORE;
 }

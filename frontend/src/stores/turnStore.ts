@@ -5,7 +5,18 @@
  */
 import { create } from 'zustand';
 import { TURN_LIMITS, type Turn, type TurnDraft, type TurnTemplate } from '../types/turn';
-import { ID_PREFIX, createId, listTurnsByBatch, nowIso, putTurn, putTurns, removeTurn } from '../utils/db';
+import {
+  ID_PREFIX,
+  createId,
+  currentStandardRev,
+  db,
+  listTurnsByBatch,
+  nowIso,
+  putTurn,
+  putTurns,
+  removeTurn,
+  updateTurnIfCurrent,
+} from '../utils/db';
 import { roundTo } from '../utils/tea';
 import { emptyFilterValue, matchKeyword, pickedSelect, type FilterValue } from '../components/common/FilterBar';
 
@@ -108,7 +119,8 @@ interface TurnStoreState {
   setFilters: (filters: FilterValue) => void;
   resetFilters: () => void;
   createTurn: (draft: TurnDraft) => Promise<Turn>;
-  updateTurn: (turnId: string, draft: TurnDraft) => Promise<void>;
+  /** 编辑做青轮次（乐观锁）：expectedRev 与库内不一致时抛 ConcurrentUpdateError */
+  updateTurn: (turnId: string, expectedRev: number, draft: TurnDraft) => Promise<void>;
   deleteTurn: (turnId: string) => Promise<void>;
   copyPreviousTurn: (batchId?: string) => Promise<Turn | null>;
   saveTemplate: (turn: Turn) => void;
@@ -157,6 +169,9 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
   async createTurn(draft) {
     const current = get().turns.filter((turn) => turn.batchId === draft.batchId);
     const stamp = nowIso();
+    // 落库留痕：记录该批次所属山场当前基准版本，便于判定链追溯
+    const batch = await db.batches.get(draft.batchId);
+    const standardRev = batch ? await currentStandardRev(batch.gardenId) : 0;
     const row: Turn = {
       id: createId(ID_PREFIX.turn),
       batchId: draft.batchId,
@@ -166,6 +181,8 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
       roomTempC: draft.roomTempC,
       humidityPct: draft.humidityPct,
       waterLossPct: draft.waterLossPct,
+      rev: 1,
+      standardRev,
       createdAt: stamp,
       updatedAt: stamp,
     };
@@ -174,20 +191,17 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
     return row;
   },
 
-  async updateTurn(turnId, draft) {
-    const existing = get().turns.find((turn) => turn.id === turnId);
-    if (!existing) return;
-    const next: Turn = {
-      ...existing,
+  async updateTurn(turnId, expectedRev, draft) {
+    // 乐观锁 CAS：晚到一次（rev 过期）在数据层抛 ConcurrentUpdateError，不覆盖对方记录
+    const next = await updateTurnIfCurrent(turnId, expectedRev, {
+      batchId: draft.batchId,
       shakeMin: draft.shakeMin,
       restMin: draft.restMin,
       roomTempC: draft.roomTempC,
       humidityPct: draft.humidityPct,
       waterLossPct: draft.waterLossPct,
-      updatedAt: nowIso(),
-    };
-    await putTurn(next);
-    await get().loadTurns(existing.batchId);
+    });
+    await get().loadTurns(next.batchId);
   },
 
   async deleteTurn(turnId) {
@@ -223,14 +237,18 @@ export const useTurnStore = create<TurnStoreState>((set, get) => ({
     const template = get().template;
     const existing = get().turns.find((turn) => turn.id === turnId);
     if (!template || !existing) return;
-    await get().updateTurn(turnId, {
-      batchId: existing.batchId,
-      shakeMin: template.shakeMin,
-      restMin: template.restMin,
-      roomTempC: template.roomTempC,
-      humidityPct: template.humidityPct,
-      waterLossPct: template.waterLossPct,
-    });
+    await get().updateTurn(
+      turnId,
+      existing.rev,
+      {
+        batchId: existing.batchId,
+        shakeMin: template.shakeMin,
+        restMin: template.restMin,
+        roomTempC: template.roomTempC,
+        humidityPct: template.humidityPct,
+        waterLossPct: template.waterLossPct,
+      },
+    );
   },
 
   clearTemplate() {

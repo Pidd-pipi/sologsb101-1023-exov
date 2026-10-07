@@ -11,6 +11,7 @@ import type { Turn } from '../types/turn';
 import type { Fix } from '../types/fix';
 import type { Roast } from '../types/roast';
 import type { Review } from '../types/review';
+import type { GardenStandard } from '../types/standard';
 import { DB_NAME, DB_VERSION, type DatabaseSnapshot } from './db';
 import { batchLabel, isRatioValid, roundTo } from './tea';
 
@@ -155,6 +156,8 @@ export function parseSnapshotJson(text: string): DatabaseSnapshot {
   assertRows(raw.fixes, 'fixes');
   assertRows(raw.roasts, 'roasts');
   assertRows(raw.reviews, 'reviews');
+  // standards 为 v3 新增表：v2 旧存档没有该表，交给导入方按当前值补齐，这里不强制
+  const standards = Array.isArray(raw.standards) ? (raw.standards as GardenStandard[]) : [];
   return {
     name: DB_NAME,
     schemaVersion: typeof raw.schemaVersion === 'number' ? raw.schemaVersion : DB_VERSION,
@@ -165,6 +168,7 @@ export function parseSnapshotJson(text: string): DatabaseSnapshot {
     fixes: raw.fixes as DatabaseSnapshot['fixes'],
     roasts: raw.roasts as DatabaseSnapshot['roasts'],
     reviews: raw.reviews as DatabaseSnapshot['reviews'],
+    standards,
   };
 }
 

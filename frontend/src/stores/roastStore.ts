@@ -9,6 +9,8 @@ import type { Garden } from '../types/garden';
 import {
   ID_PREFIX,
   createId,
+  currentStandardRev,
+  db,
   listRoasts,
   listRoastsByBatch,
   nowIso,
@@ -92,6 +94,8 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
   async createRoast(draft) {
     const branch = get().roasts.filter((roast) => roast.batchId === draft.batchId);
     const stamp = nowIso();
+    const batch = await db.batches.get(draft.batchId);
+    const standardRev = batch ? await currentStandardRev(batch.gardenId) : 0;
     const row: Roast = {
       id: createId(ID_PREFIX.roast),
       batchId: draft.batchId,
@@ -101,6 +105,7 @@ export const useRoastStore = create<RoastStoreState>((set, get) => ({
       charcoal: draft.charcoal,
       nextRoastDate: draft.nextRoastDate,
       state: draft.state,
+      standardRev,
       createdAt: stamp,
       updatedAt: stamp,
     };

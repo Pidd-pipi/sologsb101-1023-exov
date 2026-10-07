@@ -29,6 +29,13 @@ export interface Turn {
   humidityPct: number;
   /** 本轮结束时累计失水率 % */
   waterLossPct: number;
+  /**
+   * 乐观锁版本号：两个标签页同时编辑同一批次时，晚到一次据此识别
+   * 「已被别人更新」而拒绝覆盖对方刚录入的做青记录。每次成功保存 +1。
+   */
+  rev: number;
+  /** 落库时该批次所属山场基准的版本号（判定链留痕，仅作追溯展示） */
+  standardRev: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { liveQuery, type Subscription } from 'dexie';
 import { db, listTurnsByBatch } from '../utils/db';
 import type { Turn, TurnSegment, TurnTimelineItem } from '../types/turn';
+import type { TurnBaseline } from '../types/standard';
 import { judgeHumidity, judgeRoomTemp, judgeWaterLoss, minutesToReadable, roundTo, type RangeVerdict } from '../utils/tea';
 
 export interface UseTurnTimelineResult {
@@ -128,7 +129,10 @@ export function buildTurnTimeline(turns: Turn[]): {
   };
 }
 
-export function useTurnTimeline(batchId: string | null | undefined): UseTurnTimelineResult {
+export function useTurnTimeline(
+  batchId: string | null | undefined,
+  baseline?: TurnBaseline,
+): UseTurnTimelineResult {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -174,11 +178,11 @@ export function useTurnTimeline(batchId: string | null | undefined): UseTurnTime
 
   const verdicts = useMemo(
     () => ({
-      roomTemp: lastTurn ? judgeRoomTemp(lastTurn.roomTempC) : null,
-      humidity: lastTurn ? judgeHumidity(lastTurn.humidityPct) : null,
-      waterLoss: lastTurn ? judgeWaterLoss(lastTurn.waterLossPct) : null,
+      roomTemp: lastTurn ? judgeRoomTemp(lastTurn.roomTempC, baseline) : null,
+      humidity: lastTurn ? judgeHumidity(lastTurn.humidityPct, baseline) : null,
+      waterLoss: lastTurn ? judgeWaterLoss(lastTurn.waterLossPct, baseline) : null,
     }),
-    [lastTurn],
+    [lastTurn, baseline],
   );
 
   const shakeRatioPct = derived.totalMin > 0 ? roundTo((derived.totalShakeMin / derived.totalMin) * 100, 1) : 0;

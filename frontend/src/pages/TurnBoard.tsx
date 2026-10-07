@@ -38,9 +38,12 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import { JudgmentChainCard } from '../components/common/JudgmentChain';
 import { useTurnTimeline } from '../hooks/useTurnTimeline';
+import { useJudgmentChain } from '../hooks/useJudgmentChain';
 import { useGardenStore } from '../stores/gardenStore';
 import { useBatchStore } from '../stores/batchStore';
+import { ConcurrentUpdateError } from '../utils/db';
 import {
   LOSS_BANDS,
   SHAKE_BANDS,
@@ -102,7 +105,11 @@ export default function TurnBoard() {
   };
 
   const activeBatch = batches.find((batch) => batch.id === activeBatchId) ?? null;
-  const timeline = useTurnTimeline(activeBatchId);
+  const { verdicts } = useJudgmentChain();
+  const activeVerdict = activeBatchId ? verdicts.get(activeBatchId) : undefined;
+  // 判定链：未定稿批次按当前基准，已定稿批次按冻结基准回放失水判定
+  const timelineBaseline = activeVerdict?.turn;
+  const timeline = useTurnTimeline(activeBatchId, timelineBaseline);
 
   const orderedTurns = useMemo(() => [...turns].sort((a, b) => a.roundNo - b.roundNo), [turns]);
   const filteredTurns = useMemo(() => filterTurns(orderedTurns, filters), [orderedTurns, filters]);
@@ -162,15 +169,23 @@ export default function TurnBoard() {
     if (!activeBatchId) return;
     try {
       if (editingTurn) {
-        await updateTurn(editingTurn.id, { ...values, batchId: activeBatchId });
+        // 乐观锁：带上打开编辑时的 rev，晚到一次会被数据层拒绝
+        await updateTurn(editingTurn.id, editingTurn.rev, { ...values, batchId: activeBatchId });
         message.success(`第 ${editingTurn.roundNo} 轮参数已更新`);
       } else {
         const created = await createTurn({ ...values, batchId: activeBatchId });
-        message.success(`已新增第 ${created.roundNo} 轮做青参数`);
+        message.success(`已新增第 ${created.roundNo} 轮做青参数（已按基准 v${created.standardRev} 留痕）`);
       }
       setModalOpen(false);
       setEditingTurn(null);
     } catch (error) {
+      if (error instanceof ConcurrentUpdateError) {
+        // 不能盖掉对方刚录的做青记录：关掉旧表单，liveQuery 已把列表刷新到最新
+        message.error(error.message);
+        setModalOpen(false);
+        setEditingTurn(null);
+        return;
+      }
       message.error(error instanceof Error ? error.message : '做青轮次保存失败');
     }
   };
@@ -226,7 +241,7 @@ export default function TurnBoard() {
       dataIndex: 'shakeMin',
       width: 150,
       render: (value: number) => {
-        const verdict = judgeShakeMin(value);
+        const verdict = judgeShakeMin(value, timelineBaseline);
         return (
           <Space size={6}>
             <span>{value} 分钟</span>
@@ -241,7 +256,7 @@ export default function TurnBoard() {
       dataIndex: 'roomTempC',
       width: 130,
       render: (value: number) => {
-        const verdict = judgeRoomTemp(value);
+        const verdict = judgeRoomTemp(value, timelineBaseline);
         return (
           <Space size={6}>
             <span>{value} ℃</span>
@@ -255,7 +270,7 @@ export default function TurnBoard() {
       dataIndex: 'humidityPct',
       width: 130,
       render: (value: number) => {
-        const verdict = judgeHumidity(value);
+        const verdict = judgeHumidity(value, timelineBaseline);
         return (
           <Space size={6}>
             <span>{value} %</span>
@@ -270,7 +285,7 @@ export default function TurnBoard() {
       width: 160,
       render: (value: number, row) => {
         const item = itemByTurnId.get(row.id);
-        const verdict = judgeWaterLoss(value);
+        const verdict = judgeWaterLoss(value, timelineBaseline);
         return (
           <Space size={6}>
             <span>{value} %</span>
@@ -421,6 +436,10 @@ export default function TurnBoard() {
               hint={timeline.trend === 'rising' ? '走势：持续上升' : timeline.trend === 'falling' ? '走势：回落' : '走势：平稳'}
             />
           </div>
+
+          <Card className="panel-card" style={{ marginBottom: 14 }} title="判定链（基准 → 做青 → 焙火 → 审评）">
+            <JudgmentChainCard verdict={activeVerdict} />
+          </Card>
 
           <Row gutter={[14, 14]}>
             <Col xs={24} xl={14}>

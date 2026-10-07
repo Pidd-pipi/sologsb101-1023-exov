@@ -30,10 +30,13 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import { JudgmentChainTag } from '../components/common/JudgmentChain';
 import { useIdbTable } from '../hooks/useIdbTable';
+import { useJudgmentChain } from '../hooks/useJudgmentChain';
 import { useGardenStore } from '../stores/gardenStore';
 import { filterReviews, useBatchStore } from '../stores/batchStore';
-import { db } from '../utils/db';
+import { useRoastStore } from '../stores/roastStore';
+import { ConcurrentUpdateError, db, submitReview } from '../utils/db';
 import {
   BLEND_CANDIDATE_SCORE,
   REVIEW_SCORE_LABEL,
@@ -57,12 +60,14 @@ export default function ReviewBoard() {
   const reviewFilters = useBatchStore((state) => state.reviewFilters);
   const setReviewFilters = useBatchStore((state) => state.setReviewFilters);
   const resetReviewFilters = useBatchStore((state) => state.resetReviewFilters);
-  const markBatchState = useBatchStore((state) => state.markBatchState);
+  const loadBatches = useBatchStore((state) => state.loadBatches);
+  const loadRoasts = useRoastStore((state) => state.loadRoasts);
 
   const reviewsTable = useIdbTable<Review>(db.reviews, {
     prefix: 'review',
     sort: (a, b) => b.totalScore - a.totalScore,
   });
+  const { verdicts } = useJudgmentChain();
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingReview, setEditingReview] = useState<Review | null>(null);
@@ -139,35 +144,37 @@ export default function ReviewBoard() {
   };
 
   const submit = async (values: ReviewDraft): Promise<void> => {
-    const totalScore = weightedTotalScore({
-      aroma: values.aroma,
-      liquorColor: values.liquorColor,
-      taste: values.taste,
-      leafBase: values.leafBase,
-    });
-    const payload: Omit<Review, 'id' | 'createdAt' | 'updatedAt'> = {
-      batchId: values.batchId,
-      reviewedAt: values.reviewedAt,
-      aroma: values.aroma,
-      liquorColor: values.liquorColor,
-      taste: values.taste,
-      leafBase: values.leafBase,
-      totalScore,
-      blendNote: values.blendNote ?? '',
-    };
     try {
-      if (editingReview) {
-        await reviewsTable.update(editingReview.id, payload);
-        message.success(`审评记录已更新，加权总分 ${totalScore} 分（${scoreGrade(totalScore)}）`);
-      } else {
-        await reviewsTable.create(payload);
-        message.success(`审评已登记，加权总分 ${totalScore} 分（${scoreGrade(totalScore)}）`);
-      }
-      const nextState = await markBatchState(values.batchId, '已审评');
-      if (nextState) message.success(`批次工序状态已回写为「${nextState}」`);
+      // 提交审评即定稿：事务内冻结当时基准与失水 / 火功判定；编辑带 rev 做乐观锁
+      const saved = await submitReview({
+        id: editingReview?.id,
+        draft: {
+          batchId: values.batchId,
+          reviewedAt: values.reviewedAt,
+          aroma: values.aroma,
+          liquorColor: values.liquorColor,
+          taste: values.taste,
+          leafBase: values.leafBase,
+          blendNote: values.blendNote ?? '',
+        },
+        expectedRev: editingReview?.rev,
+      });
+      message.success(
+        `审评已${editingReview ? '更新' : '定稿'}，加权总分 ${saved.totalScore} 分（${scoreGrade(saved.totalScore)}）· 已冻结基准 v${
+          saved.frozen?.standardRev ?? '?'
+        } 的失水与火功判定`,
+      );
+      // 刷新手动加载的批次 / 焙火（liveQuery 的审评与判定链会自动更新）
+      await Promise.all([loadBatches(), loadRoasts()]);
       setModalOpen(false);
       setEditingReview(null);
     } catch (error) {
+      if (error instanceof ConcurrentUpdateError) {
+        message.error(error.message);
+        setModalOpen(false);
+        setEditingReview(null);
+        return;
+      }
       message.error(error instanceof Error ? error.message : '审评记录保存失败');
     }
   };
@@ -248,6 +255,12 @@ export default function ReviewBoard() {
       width: 110,
       render: (_: unknown, row) =>
         row.totalScore >= BLEND_CANDIDATE_SCORE ? <Tag color="volcano">候选</Tag> : <Tag>待复评</Tag>,
+    },
+    {
+      title: '判定链 / 定稿',
+      key: 'verdict',
+      width: 250,
+      render: (_: unknown, row) => <JudgmentChainTag verdict={verdicts.get(row.batchId)} />,
     },
     {
       title: '拼配去向',

@@ -38,9 +38,13 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import StandardPanel from '../components/common/StandardPanel';
+import { JudgmentChainCard, JudgmentChainTag } from '../components/common/JudgmentChain';
 import { useTurnTimeline } from '../hooks/useTurnTimeline';
+import { useJudgmentChain } from '../hooks/useJudgmentChain';
 import { filterGardens, useGardenStore } from '../stores/gardenStore';
 import { useBatchStore } from '../stores/batchStore';
+import { selectCurrentStandard, useStandardStore } from '../stores/standardStore';
 import { ALTITUDE_BANDS, CULTIVAR_OPTIONS, SOIL_OPTIONS, type Garden, type GardenDraft } from '../types/garden';
 import { BATCH_STATES, TENDERNESS_OPTIONS, type Batch, type BatchDraft } from '../types/batch';
 import {
@@ -83,6 +87,8 @@ export default function GardenList() {
   const loadBatches = useBatchStore((state) => state.loadBatches);
   const loadReviews = useBatchStore((state) => state.loadReviews);
 
+  const standards = useStandardStore((state) => state.standards);
+
   const [gardenModalOpen, setGardenModalOpen] = useState(false);
   const [editingGarden, setEditingGarden] = useState<Garden | null>(null);
   const [batchModalOpen, setBatchModalOpen] = useState(false);
@@ -112,7 +118,13 @@ export default function GardenList() {
     [batches, drawerGardenId],
   );
   const timelineBatchId = detailBatches[0]?.id ?? null;
-  const timeline = useTurnTimeline(timelineBatchId);
+  const { verdicts } = useJudgmentChain();
+  const drawerStandard = useMemo(
+    () => selectCurrentStandard(standards, drawerGardenId),
+    [standards, drawerGardenId],
+  );
+  const timelineVerdict = timelineBatchId ? verdicts.get(timelineBatchId) : undefined;
+  const timeline = useTurnTimeline(timelineBatchId, timelineVerdict?.turn ?? drawerStandard?.turn);
   const detailGarden = gardens.find((garden) => garden.id === drawerGardenId) ?? null;
 
   const selectConfigs: FilterSelectConfig[] = [
@@ -486,14 +498,42 @@ export default function GardenList() {
           />
         ) : (
           <>
+            {detailGarden ? (
+              <div className="panel-card" style={{ marginBottom: 16 }}>
+                <StandardPanel garden={detailGarden} />
+              </div>
+            ) : null}
             <Table<Batch>
               rowKey="id"
               size="small"
               dataSource={detailBatches}
-              columns={batchColumns}
+              columns={[
+                ...batchColumns
+                  .filter((column) => column.key !== 'action')
+                  .map((column) => (column.key === 'state'
+                    ? {
+                        ...column,
+                        render: (_: unknown, batch: Batch) => (
+                          <Space size={6} wrap>
+                            <GradeTag kind="state" value={batch.state} />
+                            <JudgmentChainTag verdict={verdicts.get(batch.id)} />
+                          </Space>
+                        ),
+                      }
+                    : column)),
+                batchColumns.find((column) => column.key === 'action') as ColumnsType<Batch>[number],
+              ]}
               pagination={false}
-              scroll={{ x: 720 }}
+              scroll={{ x: 980 }}
             />
+            {timelineVerdict ? (
+              <div className="panel-card" style={{ marginTop: 16 }}>
+                <Typography.Title level={5} style={{ marginTop: 0 }}>
+                  最新批次判定链 · {detailBatches[0] ? detailBatches[0].pickedAt : ''}
+                </Typography.Title>
+                <JudgmentChainCard verdict={timelineVerdict} />
+              </div>
+            ) : null}
             <div className="panel-card" style={{ marginTop: 16 }}>
               <Typography.Title level={5} style={{ marginTop: 0 }}>
                 做青时间线 · 最新批次 {detailBatches[0] ? detailBatches[0].pickedAt : ''}

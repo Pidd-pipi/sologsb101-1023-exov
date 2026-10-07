@@ -3,6 +3,9 @@
  * 香气 / 汤色 / 滋味 / 叶底四项打分，加权换算总分。
  */
 
+import type { FrozenJudgment } from './standard';
+import type { FireLevel } from './roast';
+
 /** 分项打分维度键 */
 export type ReviewScoreKey = 'aroma' | 'liquorColor' | 'taste' | 'leafBase';
 
@@ -48,6 +51,13 @@ export interface Review {
   totalScore: number;
   /** 拼配去向，例如「拼配方案 A · 40%」 */
   blendNote: string;
+  /**
+   * 定稿冻结的判定留痕：审评提交（定稿）时写入当时基准与失水 / 火功判定。
+   * 基准后续改版时，该批次仍按这里的快照保住当时判定；null 表示历史记录尚未留痕。
+   */
+  frozen: FrozenJudgment | null;
+  /** 乐观锁版本号：两个标签页同时提交同一条审评时，晚到一次被拒绝。 */
+  rev: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,4 +84,36 @@ export interface BlendCandidate {
   totalScore: number;
   state: string;
   pickedAt: string;
+  /** 是否已随审评定稿（结论已冻结，基准改版不影响其名次） */
+  finalized: boolean;
+  /** 结论采用的基准版本（定稿=冻结版本，未定稿=当前版本） */
+  standardRev: number;
+}
+
+/**
+ * 待定稿拼配候选：还没审评（未冻结）但火功已达基准的批次。
+ * 其 projectedScore 完全由当前基准派生——基准一改版，名次立即重排。
+ */
+export interface ProjectedCandidate {
+  batchId: string;
+  batchLabel: string;
+  gardenId: string;
+  gardenName: string;
+  cultivar: string;
+  state: string;
+  pickedAt: string;
+  /** 采用的当前基准版本 */
+  standardRev: number;
+  /** 末轮累计失水率 % */
+  waterLossPct: number;
+  /** 失水判定（low/ok/high） */
+  waterVerdict: import('./standard').WaterVerdictLevel;
+  /** 焙火累计热负荷 ℃·h */
+  fireLoad: number;
+  /** 火功档位 */
+  fireLevel: FireLevel;
+  /** 焙火道次数 */
+  roastPassCount: number;
+  /** 由当前基准推算的拼配投影分（基准改版后重算并重排） */
+  projectedScore: number;
 }

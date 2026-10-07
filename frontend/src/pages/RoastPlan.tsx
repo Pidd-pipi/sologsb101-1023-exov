@@ -35,6 +35,8 @@ import FilterBar, { type FilterSelectConfig } from '../components/common/FilterB
 import GradeTag from '../components/common/GradeTag';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
+import { JudgmentChainTag } from '../components/common/JudgmentChain';
+import { useJudgmentChain } from '../hooks/useJudgmentChain';
 import { useGardenStore } from '../stores/gardenStore';
 import { useBatchStore } from '../stores/batchStore';
 import {
@@ -93,6 +95,7 @@ export default function RoastPlan() {
 
   const rows = useMemo(() => filterRoasts(roasts, batches, gardens, roastFilters), [batches, gardens, roastFilters, roasts]);
   const reminders = useMemo(() => buildReminders(roasts), [roasts]);
+  const { verdicts } = useJudgmentChain();
 
   /** 过滤结果按批次分组 */
   const grouped = useMemo(() => {
@@ -221,8 +224,8 @@ export default function RoastPlan() {
             焙火曲线与复焙安排
           </Typography.Title>
           <div className="page-hint">
-            多道次按序排列，逐道推进「待焙 → 焙火中 → 已足火」；累计热负荷达到 {FIRE_THRESHOLDS.full} ℃·h 且不
-            少于两道次即判定足火。
+            多道次按序排列，逐道推进「待焙 → 焙火中 → 已足火」；累计热负荷达到该山场焙火基准的足火阈值且道次达标即判定足火。
+            基准改版后未定稿批次自动重算，已定稿批次保住审评时冻结的判定。
           </div>
         </div>
         <Space wrap>
@@ -311,9 +314,11 @@ export default function RoastPlan() {
         <Row gutter={[14, 14]}>
           {grouped.map((group) => {
             const branch = roastsOfBatch(roasts, group.batchId);
-            const fireLevel = fireLevelOfBatch(roasts, group.batchId);
-            const load = fireLoadOfBatch(roasts, group.batchId);
-            const fullFire = isFullFire(branch);
+            const verdict = verdicts.get(group.batchId);
+            const fireLevel = verdict?.fireLevel ?? fireLevelOfBatch(roasts, group.batchId);
+            const load = verdict?.fireLoad ?? fireLoadOfBatch(roasts, group.batchId);
+            const fullThreshold = verdict?.roast.fullLoad ?? FIRE_THRESHOLDS.full;
+            const fullFire = verdict ? load >= verdict.roast.fullLoad && branch.length >= verdict.roast.fullMinPasses : isFullFire(branch);
             return (
               <Col key={group.batchId} xs={24} xl={12}>
                 <Card
@@ -326,17 +331,26 @@ export default function RoastPlan() {
                     </Space>
                   }
                   extra={
-                    <Tooltip title="按上一道参数 +5 ℃ 追加下一道">
-                      <Button size="small" type="link" icon={<PlusOutlined />} onClick={() => openModal(group.batchId)}>
-                        追加道次
-                      </Button>
-                    </Tooltip>
+                    <Space size={4}>
+                      <JudgmentChainTag verdict={verdict} showLock={false} />
+                      <Tooltip title="按上一道参数 +5 ℃ 追加下一道">
+                        <Button size="small" type="link" icon={<PlusOutlined />} onClick={() => openModal(group.batchId)}>
+                          追加道次
+                        </Button>
+                      </Tooltip>
+                    </Space>
                   }
                 >
                   <Space size={16} wrap style={{ marginBottom: 10 }}>
                     <StatBadge size="small" label="道次" value={branch.length} suffix="道" />
                     <StatBadge size="small" label="累计热负荷" value={load} suffix="℃·h" tone="warning" />
-                    <StatBadge size="small" label="足火阈值" value={FIRE_THRESHOLDS.full} suffix="℃·h" />
+                    <StatBadge
+                      size="small"
+                      label="足火阈值"
+                      value={fullThreshold}
+                      suffix="℃·h"
+                      hint={verdict?.finalized ? `定稿冻结基准 v${verdict.standardRev}` : `当前基准 v${verdict?.standardRev ?? 0}`}
+                    />
                   </Space>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     {FIRE_LEVEL_ADVICE[fireLevel]}
